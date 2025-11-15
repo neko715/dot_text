@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>ドットテキスト生成</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif; margin: 20px; background:#f7f7f7; color:#111; }
+  .wrap { max-width:980px; margin:0 auto; display:grid; grid-template-columns: 360px 1fr; gap:20px; }
+  .panel { background:white; padding:16px; border-radius:8px; box-shadow:0 1px 6px rgba(0,0,0,0.06); }
+  label{display:block;margin:8px 0 4px;font-size:13px;color:#444}
+  input[type="text"], select, input[type="number"] { width:100%; padding:8px 10px; border:1px solid #ddd; border-radius:6px; font-size:14px; box-sizing:border-box;}
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  button { padding:10px 12px; border:0; background:#1976d2; color:white; border-radius:6px; cursor:pointer; font-weight:600; }
+  button.secondary { background:#555; }
+  canvas { width:100%; max-width:100%; border:1px dashed #ddd; background:transparent; display:block; }
+  .preview-wrap { display:flex; flex-direction:column; gap:10px; align-items:center; }
+  .hint { font-size:13px; color:#666; margin-top:8px; }
+  .controls { display:flex; gap:8px; margin-top:10px; }
+  .flex-center { display:flex; gap:8px; align-items:center; }
+  input[type="color"]{padding:2px;height:40px;border:none}
+  .small{font-size:12px;padding:6px 8px}
+  footer{ margin-top:18px; font-size:13px; color:#666 }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="panel">
+    <h3>設定</h3>
+
+    <label>テキスト</label>
+    <input id="text" type="text" value="Pixel Text" />
+
+    <label>フォント</label>
+    <select id="font">
+      <option value="48px sans-serif">デフォルト (sans-serif)</option>
+      <option value="48px 'Noto Sans JP', sans-serif">Noto Sans JP</option>
+      <option value="48px 'Segoe UI', system-ui, sans-serif">Segoe UI</option>
+      <option value="48px 'Arial', sans-serif">Arial</option>
+      <option value="48px 'Courier New', monospace">Courier New (等幅)</option>
+      <option value="48px 'Impact', sans-serif">Impact</option>
+    </select>
+
+    <label>フォントサイズ (px)</label>
+    <input id="fontSize" type="number" min="8" max="800" value="160" />
+
+    <label>ピクセルサイズ (px)</label>
+    <input id="pixelSize" type="number" min="1" max="200" value="8" />
+
+    <label>ピクセル間隔 (px)</label>
+    <input id="pixelGap" type="number" min="0" max="20" value="0" />
+
+    <label>色モード</label>
+    <div class="row">
+      <select id="colorMode">
+        <option value="source">元の色</option>
+        <option value="single">単色（以下で指定）</option>
+      </select>
+      <input id="singleColor" type="color" value="#111111" />
+    </div>
+
+    <label>横幅の余白（px）</label>
+    <input id="hPadding" type="number" min="0" max="500" value="20" />
+
+    <label>透明度閾値（0～1） — 0.8推奨</label>
+    <input id="alphaThreshold" type="number" min="0" max="1" step="0.05" value="0.8" />
+
+    <div style="margin-top:12px" class="controls">
+      <button id="previewBtn">プレビュー</button>
+      <button id="downloadBtn" class="secondary">PNGダウンロード</button>
+    </div>
+
+    <div class="hint">※ 透明背景で出力されます。</div>
+  </div>
+
+  <div class="panel preview-wrap">
+    <h3>プレビュー</h3>
+    <canvas id="preview" width="800" height="300"></canvas>
+    <div class="flex-center">
+      <button id="zoomIn" class="small">拡大</button>
+      <button id="zoomOut" class="small">縮小</button>
+      <button id="resetZoom" class="small">リセット</button>
+    </div>
+    <footer>プレビューは表示用に拡大縮小しています。ダウンロード時は自然サイズで出力されます。</footer>
+  </div>
+</div>
+
+<script>
+(function(){
+  const textEl = document.getElementById('text');
+  const fontSelect = document.getElementById('font');
+  const fontSizeEl = document.getElementById('fontSize');
+  const pixelSizeEl = document.getElementById('pixelSize');
+  const pixelGapEl = document.getElementById('pixelGap');
+  const colorModeEl = document.getElementById('colorMode');
+  const singleColorEl = document.getElementById('singleColor');
+  const hPaddingEl = document.getElementById('hPadding');
+  const alphaThresholdEl = document.getElementById('alphaThreshold');
+  const previewBtn = document.getElementById('previewBtn');
+  const downloadBtn = document.getElementById('downloadBtn');
+  const previewCanvas = document.getElementById('preview');
+  const ctxPreview = previewCanvas.getContext('2d');
+  const zoomIn = document.getElementById('zoomIn');
+  const zoomOut = document.getElementById('zoomOut');
+  const resetZoom = document.getElementById('resetZoom');
+
+  let zoom = 1;
+
+  function measureTextCanvas(text, font) {
+    const c = document.createElement('canvas');
+    const ctx = c.getContext('2d');
+    ctx.font = font;
+    const metrics = ctx.measureText(text);
+    const width = Math.ceil(metrics.width);
+    const fontSizeMatch = font.match(/(\d+)px/);
+    const fs = fontSizeMatch ? parseInt(fontSizeMatch[1],10) : 48;
+    const height = Math.ceil(fs * 1.2);
+    return { width, height, fontSize: fs };
+  }
+
+  function renderPixelatedImage({text, font, fontSize, pixelSize, gap, colorMode, singleColor, hPadding, alphaThreshold}) {
+    const fontStr = fontSize + 'px ' + font;
+    const src = document.createElement('canvas');
+    const ctx = src.getContext('2d');
+    ctx.font = fontStr;
+    const metrics = ctx.measureText(text);
+    const textWidth = Math.ceil(metrics.width);
+    const textHeight = Math.ceil(fontSize * 1.2);
+    src.width = textWidth + hPadding * 2;
+    src.height = textHeight + 10;
+    ctx.clearRect(0,0,src.width,src.height);
+    ctx.font = fontStr;
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#000';
+    const y = src.height / 2;
+    ctx.fillText(text, hPadding, y);
+    const imageData = ctx.getImageData(0,0,src.width,src.height);
+    const data = imageData.data;
+
+    const cols = Math.ceil(src.width / pixelSize);
+    const rows = Math.ceil(src.height / pixelSize);
+    const outW = cols * (pixelSize + gap) - gap;
+    const outH = rows * (pixelSize + gap) - gap;
+    const out = document.createElement('canvas');
+    out.width = outW;
+    out.height = outH;
+    const outCtx = out.getContext('2d');
+    outCtx.clearRect(0,0,out.width,out.height);
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const sx = Math.min(c * pixelSize, src.width-1);
+        const sy = Math.min(r * pixelSize, src.height-1);
+        const sampleW = Math.min(pixelSize, src.width - sx);
+        const sampleH = Math.min(pixelSize, src.height - sy);
+        let rSum=0,gSum=0,bSum=0,aSum=0,count=0;
+        for (let yy=0;yy<sampleH;yy++){
+          for (let xx=0;xx<sampleW;xx++){
+            const idx = ((sy+yy)*src.width + (sx+xx))*4;
+            const a = data[idx+3];
+            if (a===0) continue;
+            rSum += data[idx];
+            gSum += data[idx+1];
+            bSum += data[idx+2];
+            aSum += a;
+            count++;
+          }
+        }
+        if (count===0) continue;
+        const aavg = (aSum / count)/255;
+        if (aavg < alphaThreshold) continue; // ここで閾値未満は描画しない
+
+        const ravg = Math.round(rSum/count);
+        const gavg = Math.round(gSum/count);
+        const bavg = Math.round(bSum/count);
+
+        let drawColor;
+        if (colorMode==='single'){
+          const hex = singleColor.replace('#','');
+          const rr = parseInt(hex.slice(0,2),16);
+          const gg = parseInt(hex.slice(2,4),16);
+          const bb = parseInt(hex.slice(4,6),16);
+          drawColor = `rgba(${rr},${gg},${bb},${aavg.toFixed(3)})`;
+        }else{
+          drawColor = `rgba(${ravg},${gavg},${bavg},${aavg.toFixed(3)})`;
+        }
+
+        const dx = c*(pixelSize+gap);
+        const dy = r*(pixelSize+gap);
+        outCtx.fillStyle = drawColor;
+        outCtx.fillRect(Math.round(dx), Math.round(dy), pixelSize, pixelSize);
+      }
+    }
+    return out;
+  }
+
+  function updatePreview() {
+    const text = textEl.value || '';
+    if (!text.trim()) { ctxPreview.clearRect(0,0,previewCanvas.width, previewCanvas.height); return; }
+    let fontFamily = fontSelect.value.replace(/^\d+px\s*/, '') || 'sans-serif';
+    const fontSize = parseInt(fontSizeEl.value,10) || 160;
+    const pixelSize = Math.max(1, parseInt(pixelSizeEl.value,10) || 8);
+    const gap = Math.max(0, parseInt(pixelGapEl.value,10) || 0);
+    const colorMode = colorModeEl.value;
+    const singleColor = singleColorEl.value;
+    const hPadding = parseInt(hPaddingEl.value,10) || 20;
+    const alphaThreshold = parseFloat(alphaThresholdEl.value) || 0.5;
+
+    const outCanvas = renderPixelatedImage({
+      text, font: fontFamily, fontSize, pixelSize, gap, colorMode, singleColor, hPadding, alphaThreshold
+    });
+
+    const dpr = window.devicePixelRatio || 1;
+    const displayW = Math.min(outCanvas.width * zoom, 1200);
+    const displayH = Math.min(outCanvas.height * zoom, 800);
+    previewCanvas.width = Math.round(displayW * dpr);
+    previewCanvas.height = Math.round(displayH * dpr);
+    previewCanvas.style.width = displayW + 'px';
+    previewCanvas.style.height = displayH + 'px';
+    ctxPreview.setTransform(dpr,0,0,dpr,0,0);
+    ctxPreview.clearRect(0,0,previewCanvas.width, previewCanvas.height);
+    const cx = Math.max((displayW - outCanvas.width*zoom)/2,0);
+    const cy = Math.max((displayH - outCanvas.height*zoom)/2,0);
+    ctxPreview.drawImage(outCanvas,0,0,outCanvas.width,outCanvas.height,cx,cy,outCanvas.width*zoom,outCanvas.height*zoom);
+  }
+
+  previewBtn.addEventListener('click', updatePreview);
+  [textEl, fontSelect, fontSizeEl, pixelSizeEl, pixelGapEl, colorModeEl, singleColorEl, hPaddingEl, alphaThresholdEl].forEach(el=>el.addEventListener('input',updatePreview));
+
+  zoomIn.addEventListener('click',()=>{zoom=Math.min(10,zoom*1.25);updatePreview();});
+  zoomOut.addEventListener('click',()=>{zoom=Math.max(0.1,zoom/1.25);updatePreview();});
+  resetZoom.addEventListener('click',()=>{zoom=1;updatePreview();});
+
+  downloadBtn.addEventListener('click',()=>{
+    const text = textEl.value || '';
+    if(!text.trim()) return;
+    let fontFamily = fontSelect.value.replace(/^\d+px\s*/, '') || 'sans-serif';
+    const fontSize = parseInt(fontSizeEl.value,10) || 160;
+    const pixelSize = Math.max(1, parseInt(pixelSizeEl.value,10) || 8);
+    const gap = Math.max(0, parseInt(pixelGapEl.value,10) || 0);
+    const colorMode = colorModeEl.value;
+    const singleColor = singleColorEl.value;
+    const hPadding = parseInt(hPaddingEl.value,10) || 20;
+    const alphaThreshold = parseFloat(alphaThresholdEl.value) || 0.5;
+
+    const outCanvas = renderPixelatedImage({
+      text, font: fontFamily, fontSize, pixelSize, gap, colorMode, singleColor, hPadding, alphaThreshold
+    });
+
+    outCanvas.toBlob(function(blob){
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const safe = text.replace(/[^0-9A-Za-z\u3000-\u303F\u4E00-\u9FFF\-_ ]/g,'').slice(0,20) || 'pixel_text';
+      a.download = safe+'.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),1500);
+    },'image/png');
+  });
+
+  updatePreview();
+
+})();
+</script>
+</body>
+</html>
